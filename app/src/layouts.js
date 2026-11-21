@@ -1,179 +1,167 @@
-// Panel layouts and colour grades for Neon Coast Cover Studio.
-// Every layout is described in unit space (0..1 of the cover) so the same
-// layout renders at 1080x1080, 1080x1350 and 1920x1080. A panel is a rect
-// plus an optional rotation (tilted snapshots) and a frame style. The title
-// block is part of the layout: where the big lettering sits and how large it
-// may grow, as a fraction of the cover height.
+// Layouts for Neon Coast Cover Studio.
+// Every layout is a pure function of the cover size (W, H) that returns the
+// panel rectangles (fractions resolved to pixels), the title zone, the badge
+// ribbon spot and the heat meter spot. Panels are drawn by cover.js; the
+// editor only picks a layout id, so adding a layout never touches the UI.
 
-// Gutter between panels, in unit space.
-const GUT = 0.014;
-
-// Photo area shared by the banded layouts: panels on top, title band below.
-function bandedPanels(cols, rows, photoH) {
-  const panels = [];
-  const cellW = (1 - GUT * (cols + 1)) / cols;
-  const cellH = (photoH - GUT * (rows + 1)) / rows;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      panels.push({
-        x: GUT + c * (cellW + GUT),
-        y: GUT + r * (cellH + GUT),
-        w: cellW,
-        h: cellH,
-        rot: 0,
-        frame: 'ink',
-      });
-    }
-  }
-  return panels;
-}
-
-export const LAYOUTS = [
-  {
-    id: 'grid9',
-    name: 'Palm Grid',
-    blurb: 'Nine-panel poster grid',
-    photoH: 0.74,
-    panels: bandedPanels(3, 3, 0.74),
-    title: { x: 0.05, y: 0.765, w: 0.9, h: 0.21, align: 'center', size: 0.125 },
-    badgeAt: 'right',
-  },
-  {
-    id: 'hero3',
-    name: 'Hero + Three',
-    blurb: 'One hero shot, three side panels',
-    photoH: 0.74,
-    panels: (() => {
-      const heroW = 0.645;
-      const sideX = heroW + GUT;
-      const sideW = 1 - sideX - GUT;
-      const sideH = (0.74 - GUT * 4) / 3;
-      const panels = [{ x: GUT, y: GUT, w: heroW, h: 0.74 - GUT * 2, rot: 0, frame: 'ink' }];
-      for (let i = 0; i < 3; i++) {
-        panels.push({ x: sideX, y: GUT + i * (sideH + GUT), w: sideW, h: sideH, rot: 0, frame: 'ink' });
-      }
-      return panels;
-    })(),
-    title: { x: 0.05, y: 0.765, w: 0.9, h: 0.21, align: 'center', size: 0.125 },
-    badgeAt: 'right',
-  },
-  {
-    id: 'sleeve6',
-    name: 'Sunset Sleeve',
-    blurb: 'Six wide panels, two rows',
-    photoH: 0.72,
-    panels: bandedPanels(3, 2, 0.72),
-    title: { x: 0.05, y: 0.745, w: 0.9, h: 0.23, align: 'center', size: 0.13 },
-    badgeAt: 'right',
-  },
-  {
-    id: 'duo',
-    name: 'Vice Duo',
-    blurb: 'Two tall panels side by side',
-    photoH: 0.74,
-    panels: [
-      { x: GUT, y: GUT, w: (1 - GUT * 3) / 2, h: 0.74 - GUT * 2, rot: 0, frame: 'ink' },
-      { x: GUT * 2 + (1 - GUT * 3) / 2, y: GUT, w: (1 - GUT * 3) / 2, h: 0.74 - GUT * 2, rot: 0, frame: 'ink' },
-    ],
-    title: { x: 0.05, y: 0.765, w: 0.9, h: 0.21, align: 'center', size: 0.125 },
-    badgeAt: 'right',
-  },
-  {
-    id: 'fullbleed',
-    name: 'Full Bleed',
-    blurb: 'One photo, edge to edge',
-    photoH: 1,
-    panels: [{ x: 0, y: 0, w: 1, h: 1, rot: 0, frame: 'none' }],
-    title: { x: 0.05, y: 0.74, w: 0.9, h: 0.22, align: 'left', size: 0.14 },
-    badgeAt: 'right',
-    scrim: true,
-  },
-  {
-    id: 'tilted',
-    name: 'Tilted Snapshots',
-    blurb: 'Polaroid frames tossed on the coast',
-    photoH: 1,
-    panels: [
-      { x: 0.06, y: 0.24, w: 0.4, h: 0.5, rot: -6, frame: 'polaroid' },
-      { x: 0.52, y: 0.2, w: 0.42, h: 0.52, rot: 4, frame: 'polaroid' },
-      { x: 0.28, y: 0.58, w: 0.44, h: 0.34, rot: -2, frame: 'polaroid' },
-    ],
-    title: { x: 0.05, y: 0.025, w: 0.9, h: 0.15, align: 'center', size: 0.095 },
-    badgeAt: 'right',
-  },
+export const LAYOUT_LIST = [
+  { id: 'palm-grid', name: 'Palm Grid' },
+  { id: 'hero-three', name: 'Hero + Three' },
+  { id: 'sunset-sleeve', name: 'Sunset Sleeve' },
+  { id: 'vice-duo', name: 'Vice Duo' },
+  { id: 'full-bleed', name: 'Full Bleed' },
+  { id: 'tilted', name: 'Tilted Snapshots' },
 ];
 
-export function findLayout(id) {
-  return LAYOUTS.find((l) => l.id === id) ?? LAYOUTS[0];
-}
-
-// Colour grades. Each grade carries the backdrop gradient, the wash laid
-// over every photo, the title gradient, the subtitle neon colour and the
-// badge colour. `photoFilter` is a canvas filter applied while the photo is
-// drawn (only the noir grade uses one).
-export const GRADES = {
-  sunset: {
-    name: 'Vice Sunset',
-    backdrop: ['#1d0b33', '#7a1e63', '#ff5e78', '#ffb347'],
-    washTop: 'rgba(255,150,70,0.10)',
-    washBottom: 'rgba(255,40,120,0.30)',
-    title: ['#fff6c9', '#ffb347', '#ff4d8d'],
-    subtitle: '#8ef6ff',
-    badge: '#ff4d8d',
-    star: '#ffc93c',
-  },
-  neon: {
-    name: 'Neon Nights',
-    backdrop: ['#050514', '#0d2b45', '#123a5c', '#3d0a4d'],
-    washTop: 'rgba(0,220,255,0.14)',
-    washBottom: 'rgba(255,0,160,0.32)',
-    title: ['#e8fbff', '#37e6ff', '#ff2d95'],
-    subtitle: '#ff9de2',
-    badge: '#00d8ff',
-    star: '#37e6ff',
-  },
-  gold: {
-    name: 'Palm Gold',
-    backdrop: ['#241203', '#6b3a08', '#c97b1e', '#ffd97a'],
-    washTop: 'rgba(255,210,110,0.12)',
-    washBottom: 'rgba(190,90,10,0.30)',
-    title: ['#fffbe0', '#ffd97a', '#ff8a3d'],
-    subtitle: '#ffe9a8',
-    badge: '#ffb347',
-    star: '#ffe9a8',
-  },
-  dusk: {
-    name: 'Ocean Dusk',
-    backdrop: ['#060a24', '#14264d', '#2c4a7a', '#7a5a9e'],
-    washTop: 'rgba(90,140,255,0.12)',
-    washBottom: 'rgba(60,20,110,0.34)',
-    title: ['#eef4ff', '#9db8ff', '#c77dff'],
-    subtitle: '#a8e6ff',
-    badge: '#7aa2ff',
-    star: '#ffd97a',
-  },
-  noir: {
-    name: 'Noir Heat',
-    backdrop: ['#0a0a0c', '#1c1c22', '#3a2a30', '#6b3a2e'],
-    washTop: 'rgba(255,255,255,0.04)',
-    washBottom: 'rgba(255,120,60,0.22)',
-    title: ['#ffffff', '#e8e8e8', '#ffb347'],
-    subtitle: '#ffb347',
-    badge: '#e8e8e8',
-    star: '#ffb347',
-    photoFilter: 'grayscale(0.92) contrast(1.18) brightness(1.04)',
-  },
+export const SLOT_COUNT = {
+  'palm-grid': 9,
+  'hero-three': 4,
+  'sunset-sleeve': 1,
+  'vice-duo': 2,
+  'full-bleed': 1,
+  tilted: 3,
 };
 
-export const GRADE_IDS = Object.keys(GRADES);
-
-export function findGrade(id) {
-  return GRADES[id] ?? GRADES.sunset;
+function panel(x, y, w, h, extra = {}) {
+  return { x, y, w, h, rot: 0, frame: 'edge', ...extra };
 }
 
-// The three post sizes the app exports, in the order the export buttons show.
-export const EXPORT_SIZES = [
-  { id: 'square', label: 'Square 1080 × 1080', w: 1080, h: 1080 },
-  { id: 'portrait', label: 'Portrait 1080 × 1350', w: 1080, h: 1350 },
-  { id: 'wide', label: 'Wide 1920 × 1080', w: 1920, h: 1080 },
-];
+// The panel area every multi-panel layout shares: a margin around the top
+// part of the cover, with the title band kept free at the bottom.
+function panelArea(W, H) {
+  const m = Math.round(W * 0.014);
+  const band = Math.round(H * 0.26);
+  return { x: m, y: m, w: W - m * 2, h: H - band - m, band };
+}
+
+function titleBelow(W, H) {
+  const band = Math.round(H * 0.26);
+  return { x: W / 2, y: H - band + band * 0.42, w: W * 0.92, align: 'center' };
+}
+
+function badgeTopRight(W, H) {
+  return { x: W * 0.985, y: H * 0.045, rot: -0.07 };
+}
+
+function heatBottomRight(W, H) {
+  return { x: W * 0.985, y: H * 0.965, align: 'right' };
+}
+
+// 3 x 3 grid of equal panels, title band underneath.
+function layoutPalmGrid(W, H) {
+  const a = panelArea(W, H);
+  const g = Math.round(W * 0.012);
+  const cw = (a.w - g * 2) / 3;
+  const ch = (a.h - g * 2) / 3;
+  const panels = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      panels.push(panel(a.x + c * (cw + g), a.y + r * (ch + g), cw, ch));
+    }
+  }
+  return { panels, title: titleBelow(W, H), badge: badgeTopRight(W, H), heat: heatBottomRight(W, H) };
+}
+
+// One big hero panel with three small ones stacked beside it (landscape);
+// hero on top with three in a row beneath it (portrait).
+function layoutHeroThree(W, H) {
+  const a = panelArea(W, H);
+  const g = Math.round(W * 0.012);
+  let panels;
+  if (W >= H) {
+    const heroW = a.w * 0.62;
+    const sideW = a.w - heroW - g;
+    const sh = (a.h - g * 2) / 3;
+    panels = [
+      panel(a.x, a.y, heroW, a.h),
+      panel(a.x + heroW + g, a.y, sideW, sh),
+      panel(a.x + heroW + g, a.y + sh + g, sideW, sh),
+      panel(a.x + heroW + g, a.y + (sh + g) * 2, sideW, sh),
+    ];
+  } else {
+    const heroH = a.h * 0.58;
+    const rowH = a.h - heroH - g;
+    const sw = (a.w - g * 2) / 3;
+    panels = [
+      panel(a.x, a.y, a.w, heroH),
+      panel(a.x, a.y + heroH + g, sw, rowH),
+      panel(a.x + sw + g, a.y + heroH + g, sw, rowH),
+      panel(a.x + (sw + g) * 2, a.y + heroH + g, sw, rowH),
+    ];
+  }
+  return { panels, title: titleBelow(W, H), badge: badgeTopRight(W, H), heat: heatBottomRight(W, H) };
+}
+
+// One photo fills the whole cover; the title sits on a dark band at the bottom.
+function layoutSunsetSleeve(W, H) {
+  const panels = [panel(0, 0, W, H, { frame: 'bleed' })];
+  return {
+    panels,
+    title: { x: W / 2, y: H * 0.86, w: W * 0.92, align: 'center', onPhoto: true },
+    badge: badgeTopRight(W, H),
+    heat: { x: W * 0.985, y: H * 0.965, align: 'right', onPhoto: true },
+  };
+}
+
+// Two panels, side by side in landscape, stacked in portrait, title below.
+function layoutViceDuo(W, H) {
+  const a = panelArea(W, H);
+  const g = Math.round(W * 0.012);
+  let panels;
+  if (W >= H) {
+    const pw = (a.w - g) / 2;
+    panels = [panel(a.x, a.y, pw, a.h), panel(a.x + pw + g, a.y, pw, a.h)];
+  } else {
+    const ph = (a.h - g) / 2;
+    panels = [panel(a.x, a.y, a.w, ph), panel(a.x, a.y + ph + g, a.w, ph)];
+  }
+  return { panels, title: titleBelow(W, H), badge: badgeTopRight(W, H), heat: heatBottomRight(W, H) };
+}
+
+// One photo, edge to edge, title at the lower left.
+function layoutFullBleed(W, H) {
+  const panels = [panel(0, 0, W, H, { frame: 'bleed' })];
+  return {
+    panels,
+    title: { x: W * 0.055, y: H * 0.87, w: W * 0.88, align: 'left', onPhoto: true },
+    badge: badgeTopRight(W, H),
+    heat: { x: W * 0.985, y: H * 0.965, align: 'right', onPhoto: true },
+  };
+}
+
+// Three polaroid prints, tilted and overlapping, title across the top.
+function layoutTilted(W, H) {
+  const top = Math.round(H * 0.24);
+  const areaH = H - top - Math.round(H * 0.06);
+  const pw = Math.min(W * 0.40, areaH * 0.62);
+  const ph = pw * 1.22;
+  const cx = W / 2;
+  const cy = top + areaH / 2;
+  const d = pw * 0.55;
+  const panels = [
+    panel(cx - d - pw / 2, cy - ph / 2, pw, ph, { rot: -0.11, frame: 'polaroid' }),
+    panel(cx + d - pw / 2, cy - ph / 2, pw, ph, { rot: 0.08, frame: 'polaroid' }),
+    panel(cx - pw / 2, cy - ph / 2 + ph * 0.22, pw, ph, { rot: -0.03, frame: 'polaroid' }),
+  ];
+  return {
+    panels,
+    title: { x: W / 2, y: H * 0.115, w: W * 0.9, align: 'center' },
+    badge: { x: W * 0.985, y: H * 0.03, rot: 0.06 },
+    heat: { x: W * 0.03, y: H * 0.965, align: 'left' },
+  };
+}
+
+const BUILDERS = {
+  'palm-grid': layoutPalmGrid,
+  'hero-three': layoutHeroThree,
+  'sunset-sleeve': layoutSunsetSleeve,
+  'vice-duo': layoutViceDuo,
+  'full-bleed': layoutFullBleed,
+  tilted: layoutTilted,
+};
+
+// Resolve a layout id to its geometry for a cover of W x H pixels.
+export function layoutGeometry(layoutId, W, H) {
+  const build = BUILDERS[layoutId] || BUILDERS['palm-grid'];
+  return build(W, H);
+}

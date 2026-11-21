@@ -1,47 +1,60 @@
-// The cover engine: draws a whole GTA-style poster cover onto any 2D canvas
-// at any size, from one state object. The same function paints the live
-// preview in the editor and the exported PNGs, so what you see is what you
-// get. No network, no libraries: plain canvas, two OFL fonts, grain made
-// from a noise tile drawn once.
-import { findGrade, findLayout } from './layouts.js';
+// Cover renderer for Neon Coast Cover Studio.
+// renderCover(canvas, state, W, H) paints one finished cover: the background
+// grade, the layout's panels (each a photo, cropped and positioned), the
+// title block, the badge ribbon and the heat meter. Everything is drawn on a
+// 2D canvas, so the editor preview and the exported PNG are the same picture.
 
-let fontsReady = false;
+import { layoutGeometry } from './layouts.js';
 
-/** Loads the two display fonts and waits until the browser can draw them. */
-export async function ensureCoverFonts() {
-  if (fontsReady) return;
-  try {
-    await Promise.all([
-      document.fonts.load('100px Anton'),
-      document.fonts.load('40px Pacifico'),
-      document.fonts.ready,
-    ]);
-  } catch {
-    // A missing font still leaves a usable bold fallback; never block export.
-  }
-  fontsReady = true;
-}
+export const GRADES = {
+  sunset: {
+    name: 'Sunset',
+    bgTop: '#3b115f', bgBottom: '#ff7a3d',
+    tint: '#ff5e8a', tintAlpha: 0.10,
+    titleFrom: '#fff3b0', titleTo: '#ff9a3d',
+    subtitle: '#8ef1ff', badgeBg: '#ff2e88', heat: '#ffd94d',
+  },
+  neon: {
+    name: 'Neon Night',
+    bgTop: '#070a24', bgBottom: '#131a4d',
+    tint: '#22d3ee', tintAlpha: 0.08,
+    titleFrom: '#a5f3fc', titleTo: '#ff2e88',
+    subtitle: '#ff7ad9', badgeBg: '#0ea5e9', heat: '#22d3ee',
+  },
+  dusk: {
+    name: 'Palm Dusk',
+    bgTop: '#0b3b4a', bgBottom: '#ff7ab8',
+    tint: '#2dd4bf', tintAlpha: 0.08,
+    titleFrom: '#fef9c3', titleTo: '#f472b6',
+    subtitle: '#a7f3d0', badgeBg: '#0d9488', heat: '#fde68a',
+  },
+  gold: {
+    name: 'Golden Hour',
+    bgTop: '#4a1d05', bgBottom: '#f59e0b',
+    tint: '#fbbf24', tintAlpha: 0.10,
+    titleFrom: '#fffbeb', titleTo: '#f59e0b',
+    subtitle: '#fde68a', badgeBg: '#b45309', heat: '#fef3c7',
+  },
+  noir: {
+    name: 'Noir',
+    bgTop: '#0f0a1e', bgBottom: '#312e81',
+    tint: '#8b5cf6', tintAlpha: 0.10,
+    titleFrom: '#e9d5ff', titleTo: '#c084fc',
+    subtitle: '#f0abfc', badgeBg: '#6d28d9', heat: '#ddd6fe',
+  },
+};
 
-let grainTile = null;
+export const GRADE_LIST = Object.entries(GRADES).map(([id, g]) => ({ id, name: g.name }));
 
-/** A small tile of random grey noise, tiled over the cover for film grain. */
-function getGrainTile() {
-  if (grainTile) return grainTile;
-  const tile = document.createElement('canvas');
-  tile.width = 160;
-  tile.height = 160;
-  const tctx = tile.getContext('2d');
-  const data = tctx.createImageData(160, 160);
-  for (let i = 0; i < data.data.length; i += 4) {
-    const v = 110 + Math.floor(Math.random() * 90);
-    data.data[i] = v;
-    data.data[i + 1] = v;
-    data.data[i + 2] = v;
-    data.data[i + 3] = 255;
-  }
-  tctx.putImageData(data, 0, 0);
-  grainTile = tile;
-  return tile;
+// Deterministic pseudo-random dots for the print grain, seeded per cover.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function roundRectPath(ctx, x, y, w, h, r) {
@@ -55,372 +68,247 @@ function roundRectPath(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-/** Draws one photo into one panel rect, cover-fit, with zoom and pan. */
-function paintPanelPhoto(ctx, panel, photo, grade, px, py, pw, ph) {
-  const { zoom, ox, oy } = panel;
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(px, py, pw, ph);
-  ctx.clip();
-  if (photo) {
-    const base = Math.max(pw / photo.naturalWidth, ph / photo.naturalHeight);
-    const scale = base * zoom;
-    const dw = photo.naturalWidth * scale;
-    const dh = photo.naturalHeight * scale;
-    const dx = px + (pw - dw) / 2 + ox * pw;
-    const dy = py + (ph - dh) / 2 + oy * ph;
-    if (grade.photoFilter) ctx.filter = grade.photoFilter;
-    ctx.drawImage(photo, dx, dy, dw, dh);
-    ctx.filter = 'none';
-    // Colour grade wash: warm top, hot bottom, blended over the photo.
-    const wash = ctx.createLinearGradient(0, py, 0, py + ph);
-    wash.addColorStop(0, grade.washTop);
-    wash.addColorStop(1, grade.washBottom);
-    ctx.globalCompositeOperation = 'overlay';
-    ctx.fillStyle = wash;
-    ctx.fillRect(px, py, pw, ph);
-    ctx.globalCompositeOperation = 'source-over';
-  } else {
-    const empty = ctx.createLinearGradient(px, py, px + pw, py + ph);
-    empty.addColorStop(0, '#2a1638');
-    empty.addColorStop(1, '#120a1e');
-    ctx.fillStyle = empty;
-    ctx.fillRect(px, py, pw, ph);
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.setLineDash([10, 8]);
-    ctx.lineWidth = Math.max(2, pw * 0.008);
-    ctx.strokeRect(px + 6, py + 6, pw - 12, ph - 12);
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(255,255,255,0.75)';
-    ctx.font = `bold ${Math.max(14, pw * 0.07)}px Anton, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('ADD A PHOTO', px + pw / 2, py + ph / 2);
-  }
-  ctx.restore();
+// Draw one photo into a rectangle, cover-fit, with zoom and pan offsets.
+// ox/oy are fractions of the rect (-0.5 .. 0.5).
+export function drawPhotoCover(ctx, img, rect, zoom, ox, oy) {
+  if (!img || !img.naturalWidth) return;
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  const scale = Math.max(rect.w / iw, rect.h / ih) * (zoom || 1);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const dx = rect.x + (rect.w - dw) / 2 + (ox || 0) * rect.w;
+  const dy = rect.y + (rect.h - dh) / 2 + (oy || 0) * rect.h;
+  ctx.drawImage(img, dx, dy, dw, dh);
 }
 
-/** The inked poster frame around a panel: shadow, white inner line, dark edge. */
-function paintInkFrame(ctx, px, py, pw, ph, w) {
-  const r = Math.max(4, w * 0.007);
-  ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.45)';
-  ctx.shadowBlur = w * 0.012;
-  ctx.shadowOffsetY = w * 0.004;
-  roundRectPath(ctx, px, py, pw, ph, r);
-  ctx.fillStyle = 'rgba(0,0,0,0.01)';
-  ctx.fill();
-  ctx.restore();
-  roundRectPath(ctx, px, py, pw, ph, r);
-  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-  ctx.lineWidth = Math.max(2, w * 0.004);
-  ctx.stroke();
-  roundRectPath(ctx, px + 3, py + 3, pw - 6, ph - 6, Math.max(2, r - 3));
-  ctx.strokeStyle = 'rgba(10,0,20,0.5)';
-  ctx.lineWidth = Math.max(1, w * 0.0015);
-  ctx.stroke();
-}
-
-/** A polaroid-style snapshot frame: white border, fat foot, soft shadow. */
-function paintPolaroidFrame(ctx, panel, photo, grade, px, py, pw, ph, w) {
-  const side = pw * 0.045;
-  const foot = ph * 0.16;
-  ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.55)';
-  ctx.shadowBlur = w * 0.02;
-  ctx.shadowOffsetY = w * 0.008;
-  ctx.fillStyle = '#f7f2e8';
-  ctx.fillRect(px - side, py - side, pw + side * 2, ph + side + foot);
-  ctx.restore();
-  paintPanelPhoto(ctx, panel, photo, grade, px, py, pw, ph);
-  ctx.strokeStyle = 'rgba(20,10,30,0.25)';
-  ctx.lineWidth = Math.max(1, w * 0.0012);
-  ctx.strokeRect(px, py, pw, ph);
-}
-
-/** Greedy word wrap for the big title, at most two lines. */
-function wrapTitleLines(ctx, text, maxW) {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines = [];
-  let line = '';
-  for (const word of words) {
-    const trial = line ? `${line} ${word}` : word;
-    if (ctx.measureText(trial).width <= maxW || !line) {
-      line = trial;
-    } else {
-      lines.push(line);
-      line = word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
-
-function fitTitle(ctx, text, maxW, startSize) {
-  let size = startSize;
-  let lines = [];
-  while (size > 12) {
-    ctx.font = `${size}px Anton, sans-serif`;
-    ctx.letterSpacing = `${Math.max(0, Math.round(size * 0.015))}px`;
-    lines = wrapTitleLines(ctx, text, maxW);
-    const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
-    if (lines.length <= 2 && widest <= maxW) break;
-    size -= 2;
-  }
-  return { lines, size };
-}
-
-/** The big lettering block: neon script subtitle over a gradient display title. */
-function paintTitleBlock(ctx, W, H, state, layout, grade) {
-  const t = layout.title;
-  const bx = t.x * W;
-  const by = t.y * H;
-  const bw = t.w * W;
-  const bh = t.h * H;
-  const align = t.align;
-  ctx.textAlign = align === 'left' ? 'left' : 'center';
-  ctx.textBaseline = 'alphabetic';
-  const cx = align === 'left' ? bx : bx + bw / 2;
-
-  const subtitle = (state.subtitle || '').trim();
-  const titleText = (state.title || '').trim().toUpperCase() || 'NEON COAST';
-  const startSize = t.size * H * (state.titleScale || 1);
-
-  // Subtitle in neon script, sitting just above the title.
-  let subH = 0;
-  if (subtitle) {
-    let subSize = Math.min(H * 0.042, bh * 0.2);
-    ctx.font = `${subSize}px Pacifico, cursive`;
-    while (ctx.measureText(subtitle).width > bw && subSize > 10) {
-      subSize -= 1;
-      ctx.font = `${subSize}px Pacifico, cursive`;
-    }
-    ctx.fillStyle = grade.subtitle;
-    ctx.shadowColor = grade.subtitle;
-    ctx.shadowBlur = subSize * 0.45;
-    ctx.fillText(subtitle, cx, by + subSize * 1.05);
-    ctx.shadowBlur = 0;
-    subH = subSize * 1.25;
-  }
-
-  // Title: gradient fill, white outline, hard drop shadow.
-  const { lines, size } = fitTitle(ctx, titleText, bw, startSize);
-  const grad = ctx.createLinearGradient(0, by + subH, 0, by + subH + size * lines.length);
-  grade.title.forEach((stop, i) => grad.addColorStop(i / (grade.title.length - 1), stop));
-  const lineH = size * 0.94;
-  const firstBase = by + subH + size * 0.95;
-  ctx.save();
-  ctx.shadowColor = 'rgba(5,0,15,0.65)';
-  ctx.shadowBlur = size * 0.08;
-  ctx.shadowOffsetY = size * 0.05;
-  lines.forEach((line, i) => {
-    const y = firstBase + i * lineH;
-    ctx.font = `${size}px Anton, sans-serif`;
-    ctx.letterSpacing = `${Math.max(0, Math.round(size * 0.015))}px`;
-    if (state.lettering === 'neon') {
-      ctx.lineWidth = Math.max(2, size * 0.03);
-      ctx.strokeStyle = grade.subtitle;
-      ctx.strokeText(line, cx, y);
-      ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = grade.subtitle;
-      ctx.shadowBlur = size * 0.45;
-      ctx.fillText(line, cx, y);
-    } else if (state.lettering === 'solid') {
-      ctx.lineWidth = Math.max(2, size * 0.035);
-      ctx.strokeStyle = 'rgba(10,0,20,0.7)';
-      ctx.strokeText(line, cx, y);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(line, cx, y);
-    } else {
-      ctx.lineWidth = Math.max(2, size * 0.05);
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#ffffff';
-      ctx.strokeText(line, cx, y);
-      ctx.fillStyle = grad;
-      ctx.fillText(line, cx, y);
-    }
-  });
-  ctx.restore();
-  ctx.letterSpacing = '0px';
-
-  // Heat meter: five stars at the foot of the title band — or, when the
-  // title sits at the top (tilted layout), at the foot of the cover instead
-  // so it never collides with the lettering. Lit stars first, dim ones after.
-  const stars = Math.max(0, Math.min(5, state.stars ?? 4));
-  const starSize = Math.max(14, H * 0.028);
-  const topTitle = layout.title.y < 0.3;
-  // Top-title layouts put the meter at the bottom-left, clear of the frames.
-  const sy = topTitle ? H * 0.965 : by + bh - starSize * 0.7;
-  ctx.font = `${Math.round(starSize * 0.72)}px Anton, sans-serif`;
-  const labelW = ctx.measureText('HEAT ').width;
-  ctx.font = `bold ${starSize}px sans-serif`;
-  const litW = ctx.measureText('★'.repeat(stars)).width;
-  const dimW = ctx.measureText('★'.repeat(5 - stars)).width;
-  const totalW = labelW + 6 + litW + dimW;
-  const lx = topTitle ? bx + 4 : bx + bw - 4 - totalW;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.font = `${Math.round(starSize * 0.72)}px Anton, sans-serif`;
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.fillText('HEAT ', lx, sy);
-  ctx.font = `bold ${starSize}px sans-serif`;
-  ctx.fillStyle = grade.star;
-  ctx.shadowColor = grade.star;
-  ctx.shadowBlur = starSize * 0.3;
-  ctx.fillText('★'.repeat(stars), lx + labelW + 6, sy);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  ctx.fillText('★'.repeat(5 - stars), lx + labelW + 6 + litW, sy);
-}
-
-/** A tilted badge ribbon in the top corner, with the badge words on it. */
-function paintBadgeRibbon(ctx, W, H, state, grade) {
-  const badge = (state.badge || '').trim().toUpperCase();
-  if (!badge) return;
-  const h = Math.max(20, H * 0.042);
-  ctx.font = `${Math.round(h * 0.52)}px Anton, sans-serif`;
-  const textW = ctx.measureText(badge).width;
-  const bw = textW + h * 1.6;
-  const bx = W - bw - W * 0.02;
-  const by = H * 0.018;
-  ctx.save();
-  ctx.translate(bx + bw / 2, by + h / 2);
-  ctx.rotate(-0.09);
-  ctx.fillStyle = grade.badge;
-  ctx.shadowColor = 'rgba(0,0,0,0.5)';
-  ctx.shadowBlur = h * 0.3;
-  ctx.shadowOffsetY = h * 0.08;
-  ctx.fillRect(-bw / 2, -h / 2, bw, h);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.beginPath();
-  ctx.moveTo(bw / 2, -h / 2);
-  ctx.lineTo(bw / 2 + h * 0.45, 0);
-  ctx.lineTo(bw / 2, h / 2);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = '#ffffff';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(badge, 0, h * 0.03);
-  ctx.restore();
-}
-
-/** Film grain tiled over the whole cover, plus a dark vignette at the edges. */
-function paintGrainAndVignette(ctx, W, H) {
-  const tile = getGrainTile();
-  const pattern = ctx.createPattern(tile, 'repeat');
+function gradeTint(ctx, rect, grade) {
   ctx.save();
   ctx.globalCompositeOperation = 'overlay';
-  ctx.globalAlpha = 0.55;
-  ctx.fillStyle = pattern;
-  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = grade.tintAlpha + 0.06;
+  ctx.fillStyle = grade.tint;
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   ctx.restore();
-  const vig = ctx.createRadialGradient(
-    W / 2, H / 2, Math.min(W, H) * 0.42,
-    W / 2, H / 2, Math.max(W, H) * 0.78,
-  );
-  vig.addColorStop(0, 'rgba(8,0,18,0)');
-  vig.addColorStop(1, 'rgba(8,0,18,0.42)');
-  ctx.fillStyle = vig;
+  const g = ctx.createLinearGradient(0, rect.y, 0, rect.y + rect.h);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(20,4,32,0.28)');
+  ctx.fillStyle = g;
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+}
+
+// One panel: photo, grade tint, white frame (or polaroid print).
+function drawPanel(ctx, img, rect, slot, grade, W) {
+  const border = Math.max(3, Math.round(W * 0.0035));
+  ctx.save();
+  ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  ctx.rotate(rect.rot || 0);
+  ctx.translate(-rect.w / 2, -rect.h / 2);
+  ctx.shadowColor = 'rgba(0,0,0,0.45)';
+  ctx.shadowBlur = Math.round(W * 0.008);
+  ctx.shadowOffsetY = Math.round(W * 0.004);
+
+  if (rect.frame === 'polaroid') {
+    const side = Math.round(rect.w * 0.045);
+    const bottom = Math.round(rect.h * 0.16);
+    roundRectPath(ctx, -side, -side, rect.w + side * 2, rect.h + side + bottom, Math.round(W * 0.004));
+    ctx.fillStyle = '#fdf6ec';
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    const photo = { x: 0, y: 0, w: rect.w, h: rect.h };
+    ctx.save();
+    roundRectPath(ctx, photo.x, photo.y, photo.w, photo.h, 2);
+    ctx.clip();
+    drawPhotoCover(ctx, img, photo, slot.zoom, slot.ox, slot.oy);
+    gradeTint(ctx, photo, grade);
+    ctx.restore();
+  } else if (rect.frame === 'bleed') {
+    drawPhotoCover(ctx, img, { x: 0, y: 0, w: rect.w, h: rect.h }, slot.zoom, slot.ox, slot.oy);
+    gradeTint(ctx, { x: 0, y: 0, w: rect.w, h: rect.h }, grade);
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+  } else {
+    roundRectPath(ctx, 0, 0, rect.w, rect.h, Math.round(W * 0.006));
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    const photo = { x: border, y: border, w: rect.w - border * 2, h: rect.h - border * 2 };
+    ctx.save();
+    roundRectPath(ctx, photo.x, photo.y, photo.w, photo.h, Math.round(W * 0.004));
+    ctx.clip();
+    drawPhotoCover(ctx, img, photo, slot.zoom, slot.ox, slot.oy);
+    gradeTint(ctx, photo, grade);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function fitFont(ctx, text, family, maxWidth, startSize, weight = '') {
+  let size = startSize;
+  while (size > 10) {
+    ctx.font = `${weight} ${size}px ${family}`;
+    if (ctx.measureText(text).width <= maxWidth) break;
+    size = Math.floor(size * 0.92);
+  }
+  return size;
+}
+
+function drawTitleBlock(ctx, zone, state, grade, W, H) {
+  const title = (state.title || 'NEON COAST').toUpperCase();
+  const subtitle = state.subtitle || '';
+  if (zone.onPhoto) {
+    const bandH = Math.round(H * 0.30);
+    const g = ctx.createLinearGradient(0, H - bandH, 0, H);
+    g.addColorStop(0, 'rgba(10,3,20,0)');
+    g.addColorStop(1, 'rgba(10,3,20,0.72)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, H - bandH, W, bandH);
+  }
+  const maxW = zone.w;
+  const titleSize = fitFont(ctx, title, 'Anton, sans-serif', maxW, Math.round(H * 0.115));
+  const subSize = Math.round(titleSize * 0.34);
+  const titleY = zone.y + titleSize * 0.42;
+  const subY = zone.y - titleSize * 0.52;
+
+  ctx.textAlign = zone.align === 'left' ? 'left' : 'center';
+  ctx.textBaseline = 'middle';
+
+  if (subtitle) {
+    ctx.save();
+    ctx.font = `${subSize}px Pacifico, cursive`;
+    ctx.fillStyle = grade.subtitle;
+    ctx.shadowColor = grade.subtitle;
+    ctx.shadowBlur = Math.round(W * 0.012);
+    ctx.fillText(subtitle, zone.x, subY);
+    ctx.restore();
+  }
+
+  const grad = ctx.createLinearGradient(0, titleY - titleSize * 0.55, 0, titleY + titleSize * 0.55);
+  grad.addColorStop(0, grade.titleFrom);
+  grad.addColorStop(1, grade.titleTo);
+  ctx.save();
+  try { ctx.letterSpacing = '2px'; } catch (e) { /* older canvas: no tracking */ }
+  ctx.font = `${titleSize}px Anton, sans-serif`;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = Math.max(2, Math.round(titleSize * 0.045));
+  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowBlur = Math.round(W * 0.01);
+  ctx.shadowOffsetY = Math.round(W * 0.004);
+  ctx.strokeText(title, zone.x, titleY);
+  ctx.fillStyle = grad;
+  ctx.fillText(title, zone.x, titleY);
+  ctx.restore();
+}
+
+function drawBadge(ctx, badge, text, W) {
+  if (!text) return;
+  // badge.x is the ribbon's RIGHT edge: the whole ribbon stays on the cover.
+  ctx.save();
+  ctx.font = `${Math.round(W * 0.021)}px Anton, sans-serif`;
+  const tw = ctx.measureText(text).width;
+  const pad = Math.round(W * 0.016);
+  const bw = tw + pad * 2;
+  const bh = Math.round(W * 0.038);
+  ctx.translate(badge.x - bw / 2, badge.y);
+  ctx.rotate(badge.rot || 0);
+  ctx.fillStyle = '#ff2e88';
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = Math.round(W * 0.006);
+  ctx.shadowOffsetY = Math.round(W * 0.003);
+  roundRectPath(ctx, -bw / 2, -bh / 2, bw, bh, 4);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, 1);
+  ctx.restore();
+}
+
+function drawHeat(ctx, spot, heat, grade, W) {
+  const size = Math.round(W * 0.02);
+  ctx.save();
+  ctx.font = `${Math.round(size * 0.9)}px Anton, sans-serif`;
+  ctx.textAlign = spot.align === 'left' ? 'left' : 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  const label = 'HEAT';
+  const labelW = ctx.measureText(label).width;
+  const gap = size * 0.5;
+  const starGap = size * 1.25;
+  const totalW = labelW + gap + starGap * 5;
+  let x0 = spot.align === 'left' ? spot.x : spot.x - totalW;
+  const y = spot.y;
+  ctx.fillText(label, x0, y);
+  ctx.font = `${size}px sans-serif`;
+  for (let i = 0; i < 5; i++) {
+    const sx = x0 + labelW + gap + starGap * i + size * 0.5;
+    ctx.fillStyle = i < heat ? grade.heat : 'rgba(255,255,255,0.32)';
+    ctx.fillText('★', sx, y);
+  }
+  ctx.restore();
+}
+
+function drawGrain(ctx, W, H, seedText) {
+  let seed = 2166136261;
+  for (let i = 0; i < seedText.length; i++) {
+    seed ^= seedText.charCodeAt(i);
+    seed = Math.imul(seed, 16777619);
+  }
+  const rnd = mulberry32(seed);
+  ctx.save();
+  for (let i = 0; i < 1400; i++) {
+    const a = 0.02 + rnd() * 0.05;
+    ctx.fillStyle = rnd() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
+    ctx.fillRect(rnd() * W, rnd() * H, 1 + rnd() * 2, 1 + rnd() * 2);
+  }
+  ctx.restore();
+}
+
+function drawVignette(ctx, W, H) {
+  const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.75);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.22)');
+  ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 }
 
-/**
- * Draws the full cover onto a canvas's 2D context at the canvas's own size.
- * `state` holds layoutId, gradeId, photos, panels, title, subtitle, badge,
- * stars, lettering and titleScale.
- */
-export function drawCoverArt(canvas, state) {
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width;
-  const H = canvas.height;
-  const layout = findLayout(state.layoutId);
-  const grade = findGrade(state.gradeId);
+function photoById(state, id) {
+  return (state.photos || []).find((p) => p.id === id) || null;
+}
 
-  // Backdrop: the grade's sunset gradient, top to bottom.
+// Paint one finished cover onto a canvas at W x H. The same function draws
+// the editor preview and the exported PNG, so what you see is what you get.
+export function renderCover(canvas, state, W, H) {
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const grade = GRADES[state.grade] || GRADES.sunset;
+  const geo = layoutGeometry(state.layout || 'palm-grid', W, H);
+
   const bg = ctx.createLinearGradient(0, 0, 0, H);
-  grade.backdrop.forEach((stop, i) => bg.addColorStop(i / (grade.backdrop.length - 1), stop));
+  bg.addColorStop(0, grade.bgTop);
+  bg.addColorStop(1, grade.bgBottom);
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
-  // A soft sun glow high on the cover.
-  const glow = ctx.createRadialGradient(W * 0.72, H * 0.16, 0, W * 0.72, H * 0.16, W * 0.55);
-  glow.addColorStop(0, 'rgba(255,190,120,0.28)');
-  glow.addColorStop(1, 'rgba(255,190,120,0)');
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, W, H);
 
-  // Scrim under the title for the full-bleed layout.
-  if (layout.scrim) {
-    const scrim = ctx.createLinearGradient(0, H * 0.55, 0, H);
-    scrim.addColorStop(0, 'rgba(8,0,18,0)');
-    scrim.addColorStop(1, 'rgba(8,0,18,0.72)');
-    ctx.fillStyle = scrim;
-    ctx.fillRect(0, 0, W, H);
-  }
-
-  // Panels.
-  layout.panels.forEach((panel, i) => {
-    const spec = state.panels[i] || { photo: 0, zoom: 1, ox: 0, oy: 0 };
-    const photo = state.photos[spec.photo] ? state.photos[spec.photo].img : null;
-    const px = panel.x * W;
-    const py = panel.y * H;
-    const pw = panel.w * W;
-    const ph = panel.h * H;
-    if (panel.rot) {
-      ctx.save();
-      ctx.translate(px + pw / 2, py + ph / 2);
-      ctx.rotate((panel.rot * Math.PI) / 180);
-      ctx.translate(-pw / 2, -ph / 2);
-      if (panel.frame === 'polaroid') {
-        paintPolaroidFrame(ctx, spec, photo, grade, 0, 0, pw, ph, W);
-      } else {
-        paintPanelPhoto(ctx, spec, photo, grade, 0, 0, pw, ph, W);
-        paintInkFrame(ctx, 0, 0, pw, ph, W);
-      }
-      ctx.restore();
-    } else if (panel.frame === 'polaroid') {
-      paintPolaroidFrame(ctx, spec, photo, grade, px, py, pw, ph, W);
-    } else if (panel.frame === 'none') {
-      paintPanelPhoto(ctx, spec, photo, grade, px, py, pw, ph, W);
-    } else {
-      paintPanelPhoto(ctx, spec, photo, grade, px, py, pw, ph, W);
-      paintInkFrame(ctx, px, py, pw, ph, W);
-    }
+  const slots = state.slots || [];
+  geo.panels.forEach((rect, i) => {
+    const slot = slots[i] || { photo: null, zoom: 1, ox: 0, oy: 0 };
+    const photo = photoById(state, slot.photo);
+    const img = photo ? photo.img : null;
+    drawPanel(ctx, img, rect, slot, grade, W);
   });
 
-  // Dark band behind the title where the layout bands it.
-  if (!layout.scrim && layout.id !== 'tilted') {
-    const t = layout.title;
-    const band = ctx.createLinearGradient(0, t.y * H - H * 0.02, 0, H);
-    band.addColorStop(0, 'rgba(10,0,22,0)');
-    band.addColorStop(0.35, 'rgba(10,0,22,0.42)');
-    band.addColorStop(1, 'rgba(10,0,22,0.55)');
-    ctx.fillStyle = band;
-    ctx.fillRect(0, t.y * H - H * 0.02, W, H - t.y * H + H * 0.02);
-  }
-
-  paintTitleBlock(ctx, W, H, state, layout, grade);
-  paintBadgeRibbon(ctx, W, H, state, grade);
-  paintGrainAndVignette(ctx, W, H);
-}
-
-/** Renders the cover offscreen at an exact export size and returns the canvas. */
-export function renderCoverToCanvas(state, w, h) {
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  drawCoverArt(canvas, state);
+  drawGrain(ctx, W, H, `${state.layout}|${state.title}|${W}x${H}`);
+  drawVignette(ctx, W, H);
+  drawTitleBlock(ctx, geo.title, state, grade, W, H);
+  drawBadge(ctx, geo.badge, state.badge || '', W);
+  drawHeat(ctx, geo.heat, state.heat ?? 4, grade, W);
   return canvas;
-}
-
-/** Renders the cover at an exact size and resolves to a PNG blob. */
-export function exportCoverPNG(state, w, h) {
-  return new Promise((resolve, reject) => {
-    const canvas = renderCoverToCanvas(state, w, h);
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error('PNG export failed'));
-    }, 'image/png');
-  });
 }
